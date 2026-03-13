@@ -24,6 +24,8 @@ if (config) {
   const { registerReviewTools } = await import('./tools/reviews.js');
   const { registerListingTools } = await import('./tools/listings.js');
   const { registerScreenshotTools } = await import('./tools/screenshots.js');
+  const { registerPreflightTools } = await import('./tools/preflight.js');
+  const { registerAvailabilityTools } = await import('./tools/availability.js');
 
   const client = new GooglePlayClient(config);
 
@@ -33,6 +35,8 @@ if (config) {
   registerReviewTools(server, client);
   registerListingTools(server, client);
   registerScreenshotTools(server, client);
+  registerPreflightTools(server, client);
+  registerAvailabilityTools(server, client);
 } else {
   // Config is missing — register only the setup tool
   server.tool(
