@@ -7,7 +7,12 @@ const config = loadConfig();
 
 const server = new McpServer(
   { name: 'gplay-mcp-server', version: '1.0.0' },
-  { capabilities: { logging: {} } }
+  {
+    capabilities: { logging: {} },
+    ...(!config && {
+      instructions: 'Google Play MCP Server — setup required. Run the "setup" tool for configuration instructions.',
+    }),
+  }
 );
 
 if (config) {
