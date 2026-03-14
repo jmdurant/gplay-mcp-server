@@ -36,8 +36,9 @@ export function registerBuildTools(server: McpServer, client: GooglePlayClient) 
       track: z.enum(['internal', 'alpha', 'beta', 'production']).optional().describe('Release track (default: internal)'),
       releaseName: z.string().optional().describe('Release name (e.g. "1.0.0 (1)")'),
       releaseStatus: z.enum(['draft', 'completed', 'halted', 'inProgress']).optional().describe('Release status (default: completed)'),
+      rolloutPercentage: z.number().min(0).max(100).optional().describe('Percentage of users to roll out to (0-100, default: 100). Values < 100 automatically set status to inProgress.'),
     },
-    async ({ packageName, aabPath, track, releaseName, releaseStatus }) => {
+    async ({ packageName, aabPath, track, releaseName, releaseStatus, rolloutPercentage }) => {
       try {
         const { existsSync, readFileSync } = await import('node:fs');
         if (!existsSync(aabPath)) {
@@ -45,7 +46,8 @@ export function registerBuildTools(server: McpServer, client: GooglePlayClient) 
         }
 
         const targetTrack = track ?? 'internal';
-        const status = releaseStatus ?? 'completed';
+        const fraction = rolloutPercentage != null ? rolloutPercentage / 100 : 1;
+        const status = fraction < 1 ? 'inProgress' : (releaseStatus ?? 'completed');
 
         // Step 1: Create an edit
         const edit = await client.request<AppEdit>(
@@ -67,17 +69,22 @@ export function registerBuildTools(server: McpServer, client: GooglePlayClient) 
         );
 
         // Step 3: Assign to track
+        const release: Record<string, unknown> = {
+          versionCodes: [String(bundle.versionCode)],
+          status,
+          name: releaseName,
+        };
+        if (fraction < 1) {
+          release.userFraction = fraction;
+        }
+
         await client.request(
           `/applications/${packageName}/edits/${edit.id}/tracks/${targetTrack}`,
           {
             method: 'PUT',
             body: {
               track: targetTrack,
-              releases: [{
-                versionCodes: [String(bundle.versionCode)],
-                status,
-                name: releaseName,
-              }],
+              releases: [release],
             },
           }
         );
@@ -95,7 +102,8 @@ export function registerBuildTools(server: McpServer, client: GooglePlayClient) 
               `Package: ${packageName}\n` +
               `Version code: ${bundle.versionCode}\n` +
               `Track: ${targetTrack}\n` +
-              `Status: ${status}\n\n` +
+              `Status: ${status}\n` +
+              `Rollout: ${Math.round(fraction * 100)}%\n\n` +
               JSON.stringify(result, null, 2),
           }],
         };
@@ -190,8 +198,9 @@ export function registerBuildTools(server: McpServer, client: GooglePlayClient) 
       fromTrack: z.enum(['internal', 'alpha', 'beta']).describe('Source track'),
       toTrack: z.enum(['alpha', 'beta', 'production']).describe('Destination track'),
       releaseStatus: z.enum(['draft', 'completed', 'halted', 'inProgress']).optional().describe('Release status (default: completed)'),
+      rolloutPercentage: z.number().min(0).max(100).optional().describe('Percentage of users to roll out to (0-100, default: 100). Values < 100 automatically set status to inProgress.'),
     },
-    async ({ packageName, fromTrack, toTrack, releaseStatus }) => {
+    async ({ packageName, fromTrack, toTrack, releaseStatus, rolloutPercentage }) => {
       try {
         const edit = await client.request<AppEdit>(
           `/applications/${packageName}/edits`,
@@ -209,18 +218,25 @@ export function registerBuildTools(server: McpServer, client: GooglePlayClient) 
         }
 
         const latestRelease = sourceTrack.releases[0];
+        const fraction = rolloutPercentage != null ? rolloutPercentage / 100 : 1;
+        const status = fraction < 1 ? 'inProgress' : (releaseStatus ?? 'completed');
 
         // Set on destination track
+        const release: Record<string, unknown> = {
+          versionCodes: latestRelease.versionCodes,
+          status,
+        };
+        if (fraction < 1) {
+          release.userFraction = fraction;
+        }
+
         await client.request(
           `/applications/${packageName}/edits/${edit.id}/tracks/${toTrack}`,
           {
             method: 'PUT',
             body: {
               track: toTrack,
-              releases: [{
-                versionCodes: latestRelease.versionCodes,
-                status: releaseStatus ?? 'completed',
-              }],
+              releases: [release],
             },
           }
         );
@@ -234,7 +250,8 @@ export function registerBuildTools(server: McpServer, client: GooglePlayClient) 
           content: [{
             type: 'text' as const,
             text: `Promoted from ${fromTrack} → ${toTrack}\n` +
-              `Version codes: ${latestRelease.versionCodes.join(', ')}\n\n` +
+              `Version codes: ${latestRelease.versionCodes.join(', ')}\n` +
+              `Rollout: ${Math.round(fraction * 100)}%\n\n` +
               JSON.stringify(result, null, 2),
           }],
         };
