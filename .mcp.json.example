@@ -1,0 +1,11 @@
+{
+  "mcpServers": {
+    "google-play": {
+      "command": "node",
+      "args": ["dist/index.js"],
+      "env": {
+        "GPLAY_SERVICE_ACCOUNT_KEY": "${GPLAY_SERVICE_ACCOUNT_KEY}"
+      }
+    }
+  }
+}
