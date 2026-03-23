@@ -29,17 +29,14 @@ Add to your project's `.mcp.json` (or copy the one included in this repo):
   "mcpServers": {
     "gplay": {
       "command": "node",
-      "args": ["${HOME}/gplay-mcp-server/dist/index.js"],
+      "args": ["/path/to/gplay-mcp-server/dist/index.js"],
       "env": {
-        "HOME": "${USERPROFILE}",
-        "GPLAY_SERVICE_ACCOUNT_KEY": "/path/to/service-account.json"
+        "GPLAY_SERVICE_ACCOUNT_KEY": "/path/to/google-play-service-account.json"
       }
     }
   }
 }
 ```
-
-> The `"HOME": "${USERPROFILE}"` line ensures cross-platform compatibility (Windows sets `USERPROFILE`, macOS/Linux set `HOME`). On macOS/Linux you can remove it.
 
 The server will guide you through setup if credentials are missing or invalid.
 
