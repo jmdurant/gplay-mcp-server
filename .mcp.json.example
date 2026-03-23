@@ -1,8 +1,11 @@
 {
   "mcpServers": {
-    "google-play": {
-      "command": "bash",
-      "args": ["-c", "set -a && source $HOME/.env && source ./.env 2>/dev/null && exec node $HOME/gplay-mcp-server/dist/index.js"]
+    "gplay": {
+      "command": "node",
+      "args": ["/path/to/gplay-mcp-server/dist/index.js"],
+      "env": {
+        "GPLAY_SERVICE_ACCOUNT_KEY": "/path/to/service-account.json"
+      }
     }
   }
 }

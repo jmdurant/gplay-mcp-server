@@ -10,11 +10,15 @@ export interface ConfigError {
   message: string;
 }
 
+function isPlaceholder(value: string): boolean {
+  return /^(YOUR_|your_|C:\/path\/|\/path\/)/i.test(value);
+}
+
 export function getConfigErrors(): ConfigError[] {
   const errors: ConfigError[] = [];
   const keyPath = process.env.GPLAY_SERVICE_ACCOUNT_KEY;
 
-  if (!keyPath) {
+  if (!keyPath || isPlaceholder(keyPath)) {
     errors.push({
       variable: 'GPLAY_SERVICE_ACCOUNT_KEY',
       message: 'Not set. Must be an absolute path to a Google Cloud service account JSON key file.',
