@@ -232,7 +232,7 @@ export function registerAppTools(server: McpServer, client: GooglePlayClient) {
       defaultLanguage: z.string().optional().describe('Default listing language (default: en-US)'),
       storeListing: z.object({
         language: z.string().optional().describe('Listing language (default: en-US)'),
-        title: z.string().optional().describe('App title (max 50 chars)'),
+        title: z.string().optional().describe('App title (max 30 chars — Google reduced this from 50 in 2021)'),
         shortDescription: z.string().optional().describe('Short description (max 80 chars)'),
         fullDescription: z.string().optional().describe('Full description (max 4000 chars)'),
         video: z.string().optional().describe('YouTube video URL'),

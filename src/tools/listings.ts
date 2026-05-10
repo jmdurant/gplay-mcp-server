@@ -61,7 +61,7 @@ export function registerListingTools(server: McpServer, client: GooglePlayClient
     {
       packageName: z.string().describe('Android package name'),
       language: z.string().optional().describe('Language code (default: en-US)'),
-      title: z.string().optional().describe('App title (max 50 chars)'),
+      title: z.string().optional().describe('App title (max 30 chars — Google reduced this from 50 in 2021)'),
       fullDescription: z.string().optional().describe('Full description (max 4000 chars)'),
       shortDescription: z.string().optional().describe('Short description (max 80 chars)'),
       video: z.string().optional().describe('YouTube video URL'),
