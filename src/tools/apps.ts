@@ -7,6 +7,8 @@ interface AppDetails {
   defaultLanguage?: string;
   title?: string;
   contactEmail?: string;
+  contactPhone?: string;
+  contactWebsite?: string;
 }
 
 interface AppEdit {
@@ -81,6 +83,75 @@ export function registerAppTools(server: McpServer, client: GooglePlayClient) {
           content: [{
             type: 'text' as const,
             text: `App '${title}' created/updated for package '${packageName}'.\n${JSON.stringify(result, null, 2)}`,
+          }],
+        };
+      } catch (error) {
+        return formatError(error);
+      }
+    }
+  );
+
+  server.tool(
+    'update_app_details',
+    'Update app-level contact details (email, phone, website) and default ' +
+      'language via the Edits API. ' +
+      'NOTE: the Play Publishing API does NOT expose the privacy policy URL ' +
+      'field — that has to be set manually once per app in Play Console > ' +
+      'Policy > App content > Privacy policy. The MCP can\'t bypass that.',
+    {
+      packageName: z.string().describe('Android package name'),
+      contactEmail: z.string().email().optional().describe('Public support email on the store listing'),
+      contactPhone: z.string().optional().describe('Public support phone'),
+      contactWebsite: z.string().url().optional().describe('Public support website'),
+      defaultLanguage: z.string().optional().describe('Default listing language (e.g. en-US)'),
+    },
+    async ({ packageName, contactEmail, contactPhone, contactWebsite, defaultLanguage }) => {
+      try {
+        const update: Record<string, string> = {};
+        if (contactEmail) update.contactEmail = contactEmail;
+        if (contactPhone) update.contactPhone = contactPhone;
+        if (contactWebsite) update.contactWebsite = contactWebsite;
+        if (defaultLanguage) update.defaultLanguage = defaultLanguage;
+
+        if (Object.keys(update).length === 0) {
+          return formatError(new Error(
+            'No fields to update. Pass at least one of: contactEmail, ' +
+            'contactPhone, contactWebsite, defaultLanguage.'
+          ));
+        }
+
+        const edit = await client.request<AppEdit>(
+          `/applications/${packageName}/edits`,
+          { method: 'POST', body: {} }
+        );
+
+        // PUT replaces the resource, so merge with current values to avoid
+        // wiping fields the caller didn't pass.
+        let current: AppDetails = {};
+        try {
+          current = await client.request<AppDetails>(
+            `/applications/${packageName}/edits/${edit.id}/details`
+          );
+        } catch { /* no existing details */ }
+
+        const merged = { ...current, ...update };
+
+        await client.request(
+          `/applications/${packageName}/edits/${edit.id}/details`,
+          { method: 'PUT', body: merged }
+        );
+
+        const result = await client.request(
+          `/applications/${packageName}/edits/${edit.id}:commit`,
+          { method: 'POST' }
+        );
+
+        return {
+          content: [{
+            type: 'text' as const,
+            text: `App details updated for ${packageName}.\n` +
+              `Updated fields: ${Object.keys(update).join(', ')}\n\n` +
+              JSON.stringify(result, null, 2),
           }],
         };
       } catch (error) {
