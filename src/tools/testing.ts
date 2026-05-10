@@ -8,8 +8,9 @@ interface AppEdit {
 }
 
 interface Tester {
+  // Per the Play Developer API v3 Testers resource, only googleGroups is
+  // accepted — individual emails must be added via the Play Console UI.
   googleGroups?: string[];
-  googleGroupEmails?: string[];
 }
 
 interface InternalAppSharingArtifact {
@@ -52,15 +53,39 @@ export function registerTestingTools(server: McpServer, client: GooglePlayClient
 
   server.tool(
     'add_testers',
-    'Add email addresses as testers for a track',
+    'Add Google Group email addresses as testers for a track. ' +
+      'NOTE: The Play Developer API only accepts Google Group addresses (e.g. ' +
+      'my-testers@googlegroups.com), not individual user emails. To add ' +
+      'individual testers, use the Play Console UI.',
     {
       packageName: z.string().describe('Android package name'),
-      emails: z.array(z.string()).describe('Array of tester email addresses'),
+      emails: z.array(z.string()).describe(
+        'Array of Google Group email addresses (NOT individual user emails)'
+      ),
       track: z.enum(['internal', 'alpha', 'beta', 'production']).optional().describe('Track (default: internal)'),
     },
     async ({ packageName, emails, track }) => {
       try {
         const targetTrack = track ?? 'internal';
+
+        // Reject obvious non-group addresses early so the user gets a clear
+        // error rather than a cryptic API rejection.
+        const personalDomains = /@(gmail|yahoo|outlook|hotmail|icloud|protonmail)\.com$/i;
+        const personalEmails = emails.filter(e => personalDomains.test(e));
+        if (personalEmails.length > 0) {
+          return {
+            content: [{
+              type: 'text' as const,
+              text: `Cannot add individual user emails via the API: ${personalEmails.join(', ')}\n\n` +
+                `The Play Developer API only accepts Google Group addresses for testers ` +
+                `(e.g. my-testers@googlegroups.com).\n\n` +
+                `To add individual testers, either:\n` +
+                `  1. Add them via the Play Console UI (Testing > Internal testing > Testers tab), or\n` +
+                `  2. Create a Google Group, add the testers to it, and pass the group's email here.`,
+            }],
+          };
+        }
+
         const edit = await client.request<AppEdit>(
           `/applications/${packageName}/edits`,
           { method: 'POST', body: {} }
@@ -72,7 +97,7 @@ export function registerTestingTools(server: McpServer, client: GooglePlayClient
           const existing = await client.request<Tester>(
             `/applications/${packageName}/edits/${edit.id}/testers/${targetTrack}`
           );
-          existingEmails = existing.googleGroupEmails ?? [];
+          existingEmails = existing.googleGroups ?? [];
         } catch { /* no existing testers */ }
 
         // Merge and dedupe
@@ -82,7 +107,7 @@ export function registerTestingTools(server: McpServer, client: GooglePlayClient
           `/applications/${packageName}/edits/${edit.id}/testers/${targetTrack}`,
           {
             method: 'PUT',
-            body: { googleGroupEmails: allEmails },
+            body: { googleGroups: allEmails },
           }
         );
 
@@ -126,7 +151,7 @@ export function registerTestingTools(server: McpServer, client: GooglePlayClient
         );
 
         const removeSet = new Set(emails.map(e => e.toLowerCase()));
-        const remaining = (existing.googleGroupEmails ?? []).filter(
+        const remaining = (existing.googleGroups ?? []).filter(
           e => !removeSet.has(e.toLowerCase())
         );
 
@@ -134,7 +159,7 @@ export function registerTestingTools(server: McpServer, client: GooglePlayClient
           `/applications/${packageName}/edits/${edit.id}/testers/${targetTrack}`,
           {
             method: 'PUT',
-            body: { googleGroupEmails: remaining },
+            body: { googleGroups: remaining },
           }
         );
 
