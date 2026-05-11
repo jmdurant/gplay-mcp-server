@@ -40,6 +40,53 @@ interface Tester {
 
 const PERSONAL_DOMAINS = /@(gmail|yahoo|outlook|hotmail|icloud|protonmail)\.com$/i;
 
+/// Walk every track on the package and return the highest versionCode seen,
+/// or 0 if none. Used by get_next_version_code and by collision-error
+/// enrichment so callers know exactly what to bump to. Re-uses the supplied
+/// edit ID if given, otherwise creates+deletes a throwaway one.
+async function maxVersionCodeForPackage(
+  client: GooglePlayClient,
+  packageName: string,
+  reuseEditId?: string
+): Promise<number> {
+  let editId = reuseEditId;
+  let cleanup = false;
+  if (!editId) {
+    const edit = await client.request<AppEdit>(
+      `/applications/${packageName}/edits`,
+      { method: 'POST', body: {} }
+    );
+    editId = edit.id;
+    cleanup = true;
+  }
+
+  let maxVc = 0;
+  try {
+    const tracks = await client.request<{ tracks: Track[] }>(
+      `/applications/${packageName}/edits/${editId}/tracks`
+    );
+    for (const t of tracks.tracks ?? []) {
+      for (const r of t.releases ?? []) {
+        for (const vc of r.versionCodes ?? []) {
+          const n = parseInt(vc, 10);
+          if (!isNaN(n) && n > maxVc) maxVc = n;
+        }
+      }
+    }
+  } finally {
+    if (cleanup && editId) {
+      try {
+        await client.request(
+          `/applications/${packageName}/edits/${editId}`,
+          { method: 'DELETE' }
+        );
+      } catch { /* best effort */ }
+    }
+  }
+
+  return maxVc;
+}
+
 interface SubmitToInternalParams {
   packageName: string;
   aabPath: string;
@@ -109,16 +156,36 @@ async function submitToInternalFlow(
     log.push(`Updated app details: ${fields}`);
   }
 
-  // 2. Upload AAB.
+  // 2. Upload AAB. If Play rejects with "Version code N has already been used"
+  // we look up the next available versionCode and re-throw with explicit
+  // bump instructions, since the AAB itself can't be re-versioned without a
+  // rebuild + re-sign.
   const token = await client.getAccessToken();
   const fileBuffer = readFileSync(params.aabPath);
   const uploadUrl = `https://androidpublisher.googleapis.com/upload/androidpublisher/v3/applications/${params.packageName}/edits/${edit.id}/bundles?uploadType=media`;
-  const bundle = await client.uploadRequest<Bundle>(
-    uploadUrl,
-    fileBuffer,
-    'application/octet-stream',
-    token
-  );
+  let bundle: Bundle;
+  try {
+    bundle = await client.uploadRequest<Bundle>(
+      uploadUrl,
+      fileBuffer,
+      'application/octet-stream',
+      token
+    );
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : String(e);
+    if (/Version code (\d+) has already been used/i.test(msg)) {
+      let suggestion = '';
+      try {
+        const max = await maxVersionCodeForPackage(client, params.packageName, edit.id);
+        suggestion = `\n\nNext available versionCode for ${params.packageName}: ${max + 1}.\n` +
+          `Bump pubspec.yaml's version from "1.0.0+X" to "1.0.0+${max + 1}" ` +
+          `(or set flutter.versionCode=${max + 1} in android/local.properties), ` +
+          `then rebuild and re-run this tool.`;
+      } catch { /* best effort suggestion */ }
+      throw new Error(msg + suggestion);
+    }
+    throw e;
+  }
   log.push(`Uploaded AAB (versionCode: ${bundle.versionCode})`);
 
   // 3. Upload ProGuard mapping file if provided. Same edit so it commits
@@ -340,6 +407,71 @@ export function registerBuildTools(server: McpServer, client: GooglePlayClient) 
         );
 
         return { content: [{ type: 'text' as const, text: JSON.stringify(tracks.tracks ?? [], null, 2) }] };
+      } catch (error) {
+        return formatError(error);
+      }
+    }
+  );
+
+  server.tool(
+    'get_next_version_code',
+    'Query Play for the highest versionCode across ALL tracks (internal, ' +
+      'alpha, beta, production) for a package, and return the next available ' +
+      'value. Call this BEFORE building so the AAB is built at a versionCode ' +
+      'Play will accept on upload — Play does not let you reuse versionCodes ' +
+      'and signed AABs cannot be re-versioned without a rebuild. Useful for ' +
+      'multi-machine teams where local pubspec.yaml may lag the latest ' +
+      'release on Play.',
+    {
+      packageName: z.string().describe('Android package name'),
+    },
+    async ({ packageName }) => {
+      try {
+        const edit = await client.request<AppEdit>(
+          `/applications/${packageName}/edits`,
+          { method: 'POST', body: {} }
+        );
+
+        const tracks = await client.request<{ tracks: Track[] }>(
+          `/applications/${packageName}/edits/${edit.id}/tracks`
+        );
+
+        try {
+          await client.request(
+            `/applications/${packageName}/edits/${edit.id}`,
+            { method: 'DELETE' }
+          );
+        } catch { /* best effort cleanup */ }
+
+        let maxVc = 0;
+        const perTrack: Array<{ track: string; versionCodes: string[] }> = [];
+        for (const t of tracks.tracks ?? []) {
+          const vcs: string[] = [];
+          for (const r of t.releases ?? []) {
+            for (const vc of r.versionCodes ?? []) {
+              vcs.push(vc);
+              const n = parseInt(vc, 10);
+              if (!isNaN(n) && n > maxVc) maxVc = n;
+            }
+          }
+          perTrack.push({ track: t.track, versionCodes: vcs });
+        }
+
+        const next = maxVc + 1;
+
+        return {
+          content: [{
+            type: 'text' as const,
+            text: `Next available versionCode for ${packageName}: ${next}\n\n` +
+              `Highest existing: ${maxVc === 0 ? '(none)' : maxVc}\n` +
+              `Per-track:\n` +
+              (perTrack.length === 0
+                ? '  (no tracks have releases yet)'
+                : perTrack.map(t =>
+                    `  ${t.track}: [${t.versionCodes.join(', ') || 'none'}]`
+                  ).join('\n')),
+          }],
+        };
       } catch (error) {
         return formatError(error);
       }
