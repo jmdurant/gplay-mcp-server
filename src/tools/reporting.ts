@@ -56,6 +56,45 @@ function daysAgo(n: number): CalendarDate {
   };
 }
 
+/// Run a metric-set query, and if Google rejects with a "current freshness
+/// YYYY-MM-DD" error (the metric data is lagged by several days and Google
+/// won't accept an endTime past freshness), parse that date and retry with
+/// it as the endTime. Returns the (possibly clamped) actual endTime used so
+/// callers can surface it.
+async function queryMetricWithFreshnessFallback(
+  client: GooglePlayClient,
+  path: string,
+  body: { timelineSpec: { endTime: CalendarDate; [k: string]: unknown }; [k: string]: unknown },
+): Promise<{ response: MetricQueryResponse; endTimeUsed: CalendarDate }> {
+  try {
+    const response = await client.request<MetricQueryResponse>(path, {
+      method: 'POST',
+      body,
+      baseUrl: REPORTING_BASE_URL,
+    });
+    return { response, endTimeUsed: body.timelineSpec.endTime };
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : String(e);
+    const m = /current freshness (\d{4})-(\d{2})-(\d{2})/i.exec(msg);
+    if (!m) throw e;
+    const fresh: CalendarDate = {
+      year: parseInt(m[1], 10),
+      month: parseInt(m[2], 10),
+      day: parseInt(m[3], 10),
+    };
+    const patched = {
+      ...body,
+      timelineSpec: { ...body.timelineSpec, endTime: fresh },
+    };
+    const response = await client.request<MetricQueryResponse>(path, {
+      method: 'POST',
+      body: patched,
+      baseUrl: REPORTING_BASE_URL,
+    });
+    return { response, endTimeUsed: fresh };
+  }
+}
+
 /// Pretty-print a metric value that's a rate (0..1 decimal).
 function formatRate(rows: MetricRow[], metric: string): string {
   const values = rows
@@ -93,33 +132,34 @@ export function registerReportingTools(
       try {
         const window = days ?? 28;
         const startTime = daysAgo(window);
-        // End yesterday — today's metrics aren't aggregated yet.
+        // Optimistic endTime; the helper will clamp to Google's actual
+        // metric freshness if it's lagging further behind.
         const endTime = daysAgo(1);
 
         const baseBody = {
           dimensions: [] as string[],
           timelineSpec: {
-            aggregationPeriod: 'DAILY',
+            aggregationPeriod: 'DAILY' as const,
             startTime,
             endTime,
           },
         };
 
-        const crash = await client.request<MetricQueryResponse>(
+        const { response: crash, endTimeUsed } = await queryMetricWithFreshnessFallback(
+          client,
           `/apps/${packageName}/crashRateMetricSet:query`,
-          {
-            method: 'POST',
-            body: { ...baseBody, metrics: ['crashRate'] },
-            baseUrl: REPORTING_BASE_URL,
-          },
+          { ...baseBody, metrics: ['crashRate'] },
         );
 
-        const anr = await client.request<MetricQueryResponse>(
+        // Reuse the resolved endTime for the ANR query so both metrics
+        // cover the same window.
+        const { response: anr } = await queryMetricWithFreshnessFallback(
+          client,
           `/apps/${packageName}/anrRateMetricSet:query`,
           {
-            method: 'POST',
-            body: { ...baseBody, metrics: ['anrRate'] },
-            baseUrl: REPORTING_BASE_URL,
+            ...baseBody,
+            timelineSpec: { ...baseBody.timelineSpec, endTime: endTimeUsed },
+            metrics: ['anrRate'],
           },
         );
 
@@ -127,6 +167,11 @@ export function registerReportingTools(
         const anrRows = anr.rows ?? [];
 
         const hasData = crashRows.length > 0 || anrRows.length > 0;
+        const endStr = `${endTimeUsed.year}-${String(endTimeUsed.month).padStart(2, '0')}-${String(endTimeUsed.day).padStart(2, '0')}`;
+        const wasClamped =
+          endTimeUsed.year !== endTime.year ||
+          endTimeUsed.month !== endTime.month ||
+          endTimeUsed.day !== endTime.day;
 
         return {
           content: [
@@ -134,17 +179,20 @@ export function registerReportingTools(
               type: 'text' as const,
               text:
                 `App health for ${packageName} ` +
-                `(${window}-day window ending ${endTime.year}-${String(endTime.month).padStart(2, '0')}-${String(endTime.day).padStart(2, '0')}):\n\n` +
+                `(${window}-day window ending ${endStr}):\n\n` +
                 `Crash rate: ${formatRate(crashRows, 'crashRate')} ` +
                 `(${crashRows.length} day(s) of data)\n` +
                 `ANR rate:   ${formatRate(anrRows, 'anrRate')} ` +
                 `(${anrRows.length} day(s) of data)\n\n` +
+                (wasClamped
+                  ? `Note: end date clamped to ${endStr} — Google's metric ` +
+                    `aggregation lags real-time by several days.\n\n`
+                  : '') +
                 (hasData
-                  ? "Data lags by 1 day — today's metrics arrive tomorrow."
+                  ? "Data lags by several days — metrics aren't real-time."
                   : 'No data returned. Common reasons: app has very low ' +
                     'install volume, app was just shipped, or the Reporting ' +
-                    'API is not yet enabled for the project. Enable at ' +
-                    'https://console.cloud.google.com/apis/library/playdeveloperreporting.googleapis.com'),
+                    'API is not yet enabled for the project.'),
             },
           ],
         };
