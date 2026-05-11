@@ -97,6 +97,7 @@ interface SubmitToInternalParams {
   contactWebsite?: string;
   googleGroupTesters?: string[];
   mappingFilePath?: string;
+  releaseNotes?: string;
 }
 
 interface SubmitToInternalResult {
@@ -204,6 +205,13 @@ async function submitToInternalFlow(
     status: finalStatus,
   };
   if (params.releaseName) release.name = params.releaseName;
+  if (params.releaseNotes) {
+    // Single en-US locale. For multi-locale notes, callers should drop down
+    // to upload_bundle and assemble the releaseNotes array themselves.
+    release.releaseNotes = [
+      { language: 'en-US', text: params.releaseNotes },
+    ];
+  }
 
   await client.request(
     `/applications/${params.packageName}/edits/${edit.id}/tracks/${targetTrack}`,
@@ -588,6 +596,11 @@ export function registerBuildTools(server: McpServer, client: GooglePlayClient) 
         'crashes show up as a/b/c symbols. Uploaded inside the same edit ' +
         'so it commits atomically with the bundle.'
       ),
+      releaseNotes: z.string().optional().describe(
+        'Release notes shown to internal testers (single en-US locale). For ' +
+        'multi-locale notes drop down to upload_bundle and pass the full ' +
+        'releaseNotes array.'
+      ),
     },
     async (params) => {
       try {
@@ -689,8 +702,9 @@ export function registerBuildTools(server: McpServer, client: GooglePlayClient) 
       releaseName: z.string().optional().describe('Shared release name applied to every variant'),
       releaseStatus: z.enum(['draft', 'completed']).optional().describe('Shared release status (default: completed)'),
       googleGroupTesters: z.array(z.string()).optional().describe('Shared Google Group testers added to every variant\'s internal track'),
+      releaseNotes: z.string().optional().describe('Shared en-US release notes applied to every variant\'s release'),
     },
-    async ({ bundles, releaseName, releaseStatus, googleGroupTesters }) => {
+    async ({ bundles, releaseName, releaseStatus, googleGroupTesters, releaseNotes }) => {
       const results: Array<{
         packageName: string;
         status: 'success' | 'failed';
@@ -706,6 +720,7 @@ export function registerBuildTools(server: McpServer, client: GooglePlayClient) 
             releaseStatus,
             googleGroupTesters,
             mappingFilePath: b.mappingFilePath,
+            releaseNotes,
           });
           results.push({
             packageName: b.packageName,
