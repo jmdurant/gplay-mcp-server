@@ -8,9 +8,17 @@ export class GooglePlayClient {
   private auth: GoogleAuth;
 
   constructor(config: Config) {
+    // Two scopes: androidpublisher for the standard Publishing API (edits,
+    // bundles, listings, etc.) and playdeveloperreporting for the post-launch
+    // Reporting API (crash rate, ANR rate, top error issues). The same
+    // service account needs the Reporting API enabled in Google Cloud
+    // Console for the second scope to actually work.
     this.auth = new GoogleAuth({
       keyFilename: config.serviceAccountKeyPath,
-      scopes: ['https://www.googleapis.com/auth/androidpublisher'],
+      scopes: [
+        'https://www.googleapis.com/auth/androidpublisher',
+        'https://www.googleapis.com/auth/playdeveloperreporting',
+      ],
     });
   }
 
@@ -20,11 +28,14 @@ export class GooglePlayClient {
     params?: Record<string, string>;
     rawBody?: Buffer;
     contentType?: string;
+    /// Override the host when calling a non-Publishing API like the Play
+    /// Developer Reporting API. Defaults to the Publishing API base.
+    baseUrl?: string;
   }): Promise<T> {
     const client = await this.auth.getClient();
     const method = options?.method ?? 'GET';
 
-    let url = `${BASE_URL}${path}`;
+    let url = `${options?.baseUrl ?? BASE_URL}${path}`;
     if (options?.params) {
       const searchParams = new URLSearchParams();
       for (const [key, value] of Object.entries(options.params)) {

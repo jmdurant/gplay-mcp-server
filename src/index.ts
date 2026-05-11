@@ -53,6 +53,7 @@ After updating .mcp.json, restart Claude Code for changes to take effect.`;
     const { registerScreenshotTools } = await import('./tools/screenshots.js');
     const { registerPreflightTools } = await import('./tools/preflight.js');
     const { registerAvailabilityTools } = await import('./tools/availability.js');
+    const { registerReportingTools } = await import('./tools/reporting.js');
 
     const client = new GooglePlayClient(config);
 
@@ -64,6 +65,7 @@ After updating .mcp.json, restart Claude Code for changes to take effect.`;
     registerScreenshotTools(server, client);
     registerPreflightTools(server, client);
     registerAvailabilityTools(server, client);
+    registerReportingTools(server, client);
 
     const transport = new StdioServerTransport();
     await server.connect(transport);
