@@ -113,7 +113,7 @@ async function submitToInternalFlow(
   client: GooglePlayClient,
   params: SubmitToInternalParams
 ): Promise<SubmitToInternalResult> {
-  const { existsSync, readFileSync } = await import('node:fs');
+  const { existsSync } = await import('node:fs');
   if (!existsSync(params.aabPath)) {
     throw new Error(`AAB file not found: ${params.aabPath}`);
   }
@@ -157,18 +157,20 @@ async function submitToInternalFlow(
     log.push(`Updated app details: ${fields}`);
   }
 
-  // 2. Upload AAB. If Play rejects with "Version code N has already been used"
+  // 2. Upload AAB. Streamed from disk via uploadFileRequest so 200-300MB
+  // AABs (especially when ndk { debugSymbolLevel = 'FULL' } is on) don't
+  // load entirely into memory and don't hit fetch's default body timeout
+  // mid-upload. If Play rejects with "Version code N has already been used"
   // we look up the next available versionCode and re-throw with explicit
   // bump instructions, since the AAB itself can't be re-versioned without a
   // rebuild + re-sign.
   const token = await client.getAccessToken();
-  const fileBuffer = readFileSync(params.aabPath);
   const uploadUrl = `https://androidpublisher.googleapis.com/upload/androidpublisher/v3/applications/${params.packageName}/edits/${edit.id}/bundles?uploadType=media`;
   let bundle: Bundle;
   try {
-    bundle = await client.uploadRequest<Bundle>(
+    bundle = await client.uploadFileRequest<Bundle>(
       uploadUrl,
-      fileBuffer,
+      params.aabPath,
       'application/octet-stream',
       token
     );
@@ -191,12 +193,13 @@ async function submitToInternalFlow(
 
   // 3. Upload ProGuard mapping file if provided. Same edit so it commits
   // atomically with the bundle — no chance of orphaned bundles with no
-  // mapping (which would mean obfuscated crash reports).
+  // mapping (which would mean obfuscated crash reports). Streamed from
+  // disk since mappings can be 100-200MB for large Flutter apps.
   if (params.mappingFilePath) {
-    const mappingBuffer = readFileSync(params.mappingFilePath);
     const mappingUrl = `https://androidpublisher.googleapis.com/upload/androidpublisher/v3/applications/${params.packageName}/edits/${edit.id}/apks/${bundle.versionCode}/deobfuscationFiles/proguard?uploadType=media`;
-    await client.uploadRequest(mappingUrl, mappingBuffer, 'application/octet-stream', token);
-    log.push(`Uploaded ProGuard mapping (${mappingBuffer.length} bytes)`);
+    await client.uploadFileRequest(mappingUrl, params.mappingFilePath, 'application/octet-stream', token);
+    const { statSync } = await import('node:fs');
+    log.push(`Uploaded ProGuard mapping (${statSync(params.mappingFilePath).size} bytes)`);
   }
 
   // 4. Assign to internal track.
@@ -271,7 +274,7 @@ export function registerBuildTools(server: McpServer, client: GooglePlayClient) 
     },
     async ({ packageName, aabPath, track, releaseName, releaseStatus, rolloutPercentage }) => {
       try {
-        const { existsSync, readFileSync } = await import('node:fs');
+        const { existsSync } = await import('node:fs');
         if (!existsSync(aabPath)) {
           return formatError(new Error(`AAB file not found: ${aabPath}`));
         }
@@ -286,15 +289,14 @@ export function registerBuildTools(server: McpServer, client: GooglePlayClient) 
           { method: 'POST', body: {} }
         );
 
-        // Step 2: Upload the AAB
+        // Step 2: Upload the AAB. Streamed from disk to avoid buffering
+        // 200-300MB AABs in memory and to fit under fetch's body timeout.
         const token = await client.getAccessToken();
-        const fileBuffer = readFileSync(aabPath);
-
         const uploadUrl = `https://androidpublisher.googleapis.com/upload/androidpublisher/v3/applications/${packageName}/edits/${edit.id}/bundles?uploadType=media`;
 
-        const bundle = await client.uploadRequest<Bundle>(
+        const bundle = await client.uploadFileRequest<Bundle>(
           uploadUrl,
-          fileBuffer,
+          aabPath,
           'application/octet-stream',
           token
         );
@@ -650,7 +652,7 @@ export function registerBuildTools(server: McpServer, client: GooglePlayClient) 
     },
     async ({ packageName, versionCode, mappingFilePath, type }) => {
       try {
-        const { existsSync, readFileSync } = await import('node:fs');
+        const { existsSync, statSync } = await import('node:fs');
         if (!existsSync(mappingFilePath)) {
           return formatError(new Error(`Mapping file not found: ${mappingFilePath}`));
         }
@@ -662,10 +664,11 @@ export function registerBuildTools(server: McpServer, client: GooglePlayClient) 
         );
 
         const token = await client.getAccessToken();
-        const fileBuffer = readFileSync(mappingFilePath);
         const uploadUrl = `https://androidpublisher.googleapis.com/upload/androidpublisher/v3/applications/${packageName}/edits/${edit.id}/apks/${versionCode}/deobfuscationFiles/${fileType}?uploadType=media`;
 
-        await client.uploadRequest(uploadUrl, fileBuffer, 'application/octet-stream', token);
+        // Stream from disk — mapping files are often 100-200MB.
+        await client.uploadFileRequest(uploadUrl, mappingFilePath, 'application/octet-stream', token);
+        const fileSize = statSync(mappingFilePath).size;
 
         await client.request(
           `/applications/${packageName}/edits/${edit.id}:commit`,
@@ -676,7 +679,7 @@ export function registerBuildTools(server: McpServer, client: GooglePlayClient) 
           content: [{
             type: 'text' as const,
             text: `Mapping file uploaded for ${packageName} v${versionCode} (type: ${fileType}).\n` +
-              `File: ${mappingFilePath} (${fileBuffer.length} bytes)\n` +
+              `File: ${mappingFilePath} (${fileSize} bytes)\n` +
               `Crash reports for this version code will now be deobfuscated.`,
           }],
         };

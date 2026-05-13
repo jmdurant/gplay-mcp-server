@@ -87,7 +87,18 @@ export class GooglePlayClient {
     return response.json() as Promise<T>;
   }
 
-  async uploadRequest<T>(url: string, fileBuffer: Buffer, contentType: string, token: string): Promise<T> {
+  /// Buffer-based upload. Fine for small uploads (icons, short text bodies).
+  /// For files >5MB (AABs, mapping.txt, screenshots) prefer uploadFileRequest
+  /// which streams from disk + has an explicit timeout so 300MB+ uploads
+  /// don't hit undici's default body timeout mid-upload.
+  async uploadRequest<T>(
+    url: string,
+    fileBuffer: Buffer,
+    contentType: string,
+    token: string,
+    options?: { timeoutMs?: number }
+  ): Promise<T> {
+    const timeoutMs = options?.timeoutMs ?? 15 * 60 * 1000; // 15 min default
     const response = await fetch(url, {
       method: 'POST',
       headers: {
@@ -95,7 +106,52 @@ export class GooglePlayClient {
         'Content-Type': contentType,
       },
       body: new Uint8Array(fileBuffer) as unknown as BodyInit,
+      signal: AbortSignal.timeout(timeoutMs),
     });
+
+    if (!response.ok) {
+      const text = await response.text().catch(() => '');
+      throw new GooglePlayError(response.status, 'UPLOAD_FAILED', text);
+    }
+
+    return response.json() as Promise<T>;
+  }
+
+  /// Stream a file directly from disk to the upload URL. Avoids loading the
+  /// whole file into memory (a 300MB AAB as Uint8Array is uncomfortable) and
+  /// sets a generous abort timeout so slow connections don't hit fetch's
+  /// default body timeout mid-upload. Used by upload_bundle, upload_mapping,
+  /// and apply_default_settings's image paths.
+  async uploadFileRequest<T>(
+    url: string,
+    filePath: string,
+    contentType: string,
+    token: string,
+    options?: { timeoutMs?: number }
+  ): Promise<T> {
+    const { createReadStream, statSync } = await import('node:fs');
+    const { Readable } = await import('node:stream');
+
+    const timeoutMs = options?.timeoutMs ?? 15 * 60 * 1000; // 15 min default
+    const size = statSync(filePath).size;
+
+    // Web ReadableStream from a Node fs read stream; fetch + duplex='half'
+    // streams it to the network without buffering the whole file in memory.
+    const fileStream = Readable.toWeb(createReadStream(filePath)) as unknown as ReadableStream;
+
+    const response = await fetch(url, {
+      method: 'POST',
+      headers: {
+        'Authorization': `Bearer ${token}`,
+        'Content-Type': contentType,
+        'Content-Length': String(size),
+      },
+      body: fileStream,
+      // duplex is required on Node fetch when body is a stream; not in the
+      // standard RequestInit type yet, hence the cast.
+      duplex: 'half',
+      signal: AbortSignal.timeout(timeoutMs),
+    } as RequestInit & { duplex: 'half' });
 
     if (!response.ok) {
       const text = await response.text().catch(() => '');
